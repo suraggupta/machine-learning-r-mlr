@@ -1,0 +1,599 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r message = FALSE}
+# Load necessary packages - install packages if necessary.
+
+required_packages = c( 
+  # Add to this list the packages that you will use - if unavailable, it will be 
+  # automatically installed"readr",
+  "plyr",
+  "readr",
+  "data.table",
+  "dplyr",
+  "tidyr",
+  "ggplot2",
+  "Hmisc",
+  "zoo",
+  "lubridate",
+  "caret",
+  "kknn",
+  "gbm",
+  "h2o",
+  "xgboost",
+  "mlr",
+  "parallel",
+  "parallelMap"
+)
+
+packages_to_install = required_packages[!(required_packages %in% installed.packages()[, 1])]
+
+if (length(packages_to_install) > 0) {
+  install.packages(packages_to_install)
+}
+
+suppressPackageStartupMessages({
+  sapply(required_packages, require, character.only = TRUE)
+})
+```
+
+
+```{r}
+df <- read.csv("winequality-red.csv", sep = ";")
+describe(df)
+```
+
+
+```{r}
+#Set seed for random sampling
+set.seed(42)
+
+trainIndex <- createDataPartition(df$quality, 
+                                  p = 0.7, #Proportion of training data
+                                  list = FALSE, 
+                                  times = 1)
+
+df_train <- df[trainIndex,]
+df_test  <- df[-trainIndex,]
+
+```
+
+
+--------------------------------------------
+##Linear Regression (lm() using MLR package)
+--------------------------------------------
+
+```{r}
+#Create train and test tasks to fit and evaluate model
+traintask_lm <- makeRegrTask(data = df_train, 
+                             target = "quality")
+
+testtask_lm <- makeRegrTask(data = df_test,
+                            target = "quality")
+```
+
+
+```{r}
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = detectCores())
+
+require(FSelector)
+# lrn <- makeFilterWrapper(learner = "regr.lm",
+#                          fw.method = "chi.squared",
+#                          fw.perc = res$x$fw.perc)
+
+set.seed(42)
+
+inner <- makeResampleDesc("CV", iters = 10)
+lrn <- makeFeatSelWrapper(learner = "regr.lm",
+                          resampling = inner,
+                          control = makeFeatSelControlSequential(method = "sbs"),
+                          show.info = FALSE,
+                          measures = mae)
+
+lm_mod <- train(learner = lrn, 
+             task = traintask_lm)
+
+lmpred <- predict(lm_mod, 
+                  testtask_lm)
+
+predData_lm <- lmpred$data
+
+#Mean absolute error
+performance(lmpred, measures = mae)
+
+summary(abs(predData_lm$truth - predData_lm$response)) #Distribution of errors
+```
+
+
+-----------
+##KNN
+-----------
+
+```{r}
+knn_learn <- makeLearner(cl = "regr.kknn",
+                        predict.type = "response")
+
+rancontrol <- makeTuneControlRandom(maxit = 100L)
+set_cv <- makeResampleDesc("CV", iters = 10L)
+
+knn_par <- makeParamSet(
+  makeDiscreteParam("k", values = 5L:20L),
+  makeDiscreteParam("distance", values = c(1L,2L)),
+  makeDiscreteParam("kernel", values = c("gaussian", "optimal"))
+)
+
+#Create train and test tasks to fit and evaluate model
+traintask_knn <- makeRegrTask(data = df_train, target = "quality")
+trainTask_knn <- normalizeFeatures(traintask_knn, method = "range")
+
+testtask_knn <- makeRegrTask(data = df_test, target = "quality")
+testtask_knn <- normalizeFeatures(testtask_knn, method = "range")
+
+set.seed(42)
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = detectCores())
+
+tune_knn <- tuneParams(learner = knn_learn, 
+                       task = trainTask_knn,
+                       resampling = set_cv,
+                       measures = mae,
+                       par.set = knn_par,
+                       control = rancontrol
+                       )
+
+final_knn <- setHyperPars(learner = knn_learn, par.vals = tune_knn$x)
+to.knn <- train(final_knn, traintask_knn)
+
+#Calculate MAE of predictions
+knnpred <- predict(to.knn, testtask_knn)
+
+#Mean absolute error
+performance(knnpred, measures = mae)
+```
+
+
+-----------------
+##Neural networks
+-----------------
+
+```{r}
+nnet_learn <- makeLearner(cl = "regr.nnet",
+                        predict.type = "response")
+
+rancontrol <- makeTuneControlRandom(maxit = 50L)
+set_cv <- makeResampleDesc("CV", iters = 10L)
+
+nnet_par <- makeParamSet(
+  makeDiscreteParam("size", values = 2:5),
+  makeDiscreteParam("rang", values = seq(0.1,0.9,0.1))#,
+  #makeDiscreteParam("maxit", values = seq(20,200,20)),
+ #makeDiscreteParam("MaxNWts", values = seq(100,1000,100))
+)
+
+#Create train and test tasks to fit and evaluate model
+traintask_nnet <- makeRegrTask(data = df_train, target = "quality")
+trainTask_nnet <- normalizeFeatures(traintask_nnet, method = "range")
+
+testtask_nnet <- makeRegrTask(data = df_test, target = "quality")
+testtask_nnet <- normalizeFeatures(testtask_nnet, method = "range")
+
+set.seed(42)
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = detectCores())
+
+tune_nnet <- tuneParams(learner = nnet_learn, 
+                       task = trainTask_nnet,
+                       resampling = set_cv,
+                       measures = mae,
+                       par.set = nnet_par,
+                       control = rancontrol
+                       )
+
+final_nnet <- setHyperPars(learner = nnet_learn, par.vals = tune_nnet$x)
+to.nnet <- train(final_nnet, traintask_nnet)
+
+#Calculate MAE of predictions
+nnetpred <- predict(to.nnet,testtask_nnet)
+
+#Mean absolute error
+performance(nnetpred, measures = mae)
+```
+
+
+-------------------------
+##H2O - Deep Learning
+-------------------------
+
+```{r}
+set.seed(42)
+parallelStop()
+#parallelStartSocket(cpus = detectCores())
+
+tryCatch({h2o.shutdown(prompt = FALSE)}, error = function(e){})
+h2o.init(nthreads = 1)
+
+#set parameter space
+activation_opt <- c("Rectifier","RectifierWithDropout", "Maxout","MaxoutWithDropout")
+hidden_opt <- list(10,20,30,40,50,60,70,80,
+                   c(10,10),
+                   c(20,15),
+                   c(50,50,50),
+                   c(100,100,100))
+l1_opt <- c(0,1e-3,1e-5)
+l2_opt <- c(0,1e-3,1e-5)
+rate_opt <- seq(0.001, 0.005, by = 0.001)
+rate_annealing_opt <- c(1e-8,1e-7,1e-6,1e-5,1e-4,1e-3,1e-2,1e-1,1)
+
+hyper_params <- list(activation = activation_opt,
+                     hidden = hidden_opt,
+                     l1 = l1_opt,
+                     l2 = l2_opt,
+                     rate = rate_opt,
+                     rate_annealing = rate_annealing_opt)
+
+train.h2o <- as.h2o(df_train)
+test.h2o <- as.h2o(df_test)
+
+y <- "quality"
+x <- setdiff(colnames(train.h2o),y)
+
+
+#set search criteria
+search_criteria <- list(strategy = "RandomDiscrete", max_models = 50)
+
+#train model
+dl_grid <- h2o.grid("deeplearning",
+                   grid_id = "deep_learn",
+                   hyper_params = hyper_params,
+                   search_criteria = search_criteria,
+                   training_frame = train.h2o,
+                   x = x,
+                   y = y,
+                   nfolds = 10,
+                   epochs = 100)
+
+
+#get best model
+d_grid <- h2o.getGrid("deep_learn", sort_by = "MAE")
+best_dl_model <- h2o.getModel(d_grid@model_ids[[1]])
+h2o.performance(best_dl_model, xval = T)
+
+h2o_pred <- h2o.predict(best_dl_model, newdata = test.h2o)
+
+summary(abs(as.vector(h2o_pred) - df_test$quality)) ##Distribution of errors (MAE)
+
+#Plot the distribution of errors
+ggplot() + 
+  geom_density(aes(abs(as.vector(h2o_pred) - df_test$quality))) + 
+  xlab("Absolute Errors")
+```
+
+
+-------------------------
+##Regression Trees
+-------------------------
+
+
+```{r}
+rt_learn <- makeLearner(cl = "regr.rpart", 
+                         predict.type = "response")
+
+rancontrol <- makeTuneControlRandom(maxit = 50L)
+set_cv <- makeResampleDesc("CV", iters = 10L)
+
+#Define grid search parameters
+rt_par <- makeParamSet(
+  makeDiscreteParam("minsplit", values = seq(5,20,1)),
+  makeDiscreteParam("minbucket", values = seq(5,20,1)), #number of trees
+  makeNumericParam("cp", lower = 0.001, upper = 0.2), #depth of tree
+  makeIntegerParam("maxdepth", lower = 3, upper = 15)
+)
+
+#Create train and test tasks to fit and evaluate model
+traintask_rt <- makeRegrTask(data = df_train, target = "quality")
+testtask_rt <- makeRegrTask(data = df_test, target = "quality")
+
+set.seed(42)
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = detectCores())
+
+tune_rt <- tuneParams(learner = rt_learn, 
+                       task = traintask_rt,
+                       resampling = set_cv,
+                       measures = mae,
+                       par.set = rt_par,
+                       control = rancontrol)
+
+final_rt <- setHyperPars(learner = rt_learn, par.vals = tune_rt$x)
+to.rt <- train(final_rt, traintask_rt)
+
+#Calculate MAE of predictions
+rtpred <- predict(to.rt,testtask_rt)
+
+#Mean absolute error
+performance(rtpred, measures = mae)
+```
+
+
+-------------------------
+##Random Forest
+-------------------------
+
+
+```{r}
+rf_learn <- makeLearner(cl = "regr.randomForest", 
+                         predict.type = "response")
+
+rancontrol <- makeTuneControlRandom(maxit = 50L)
+set_cv <- makeResampleDesc("CV", iters = 10L)
+
+#Define grid search parameters
+rf_par <- makeParamSet(
+  makeDiscreteParam("ntree", values = seq(100,500,20))
+)
+
+#Create train and test tasks to fit and evaluate model
+traintask_rf <- makeRegrTask(data = df_train, target = "quality")
+testtask_rf <- makeRegrTask(data = df_test, target = "quality")
+
+set.seed(42)
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = detectCores())
+
+tune_rf <- tuneParams(learner = rf_learn, 
+                       task = traintask_rf,
+                       resampling = set_cv,
+                       measures = mae,
+                       par.set = rf_par,
+                       control = rancontrol)
+
+final_rf <- setHyperPars(learner = rf_learn, par.vals = tune_rf$x)
+to.rf <- train(final_rf, traintask_rf)
+
+#Calculate MAE of predictions
+rfpred <- predict(to.rf,testtask_rf)
+
+#Mean absolute error
+performance(rfpred, measures = mae)
+```
+
+
+
+-----------------------------
+##Conditional Inference Tree
+-----------------------------
+
+
+```{r}
+ct_learn <- makeLearner(cl = "regr.ctree", 
+                         predict.type = "response")
+
+rancontrol <- makeTuneControlRandom(maxit = 50L)
+set_cv <- makeResampleDesc("CV", iters = 10L)
+
+#Define grid search parameters
+ct_par <- makeParamSet(
+  makeDiscreteParam("mincriterion", values = seq(0.9,0.99,0.01)),
+  makeDiscreteParam("minbucket", values = seq(5,20,1)), #number of trees
+  makeDiscreteParam("minsplit", values = seq(5,25,1)), #Min split
+  makeIntegerParam("maxdepth", lower = 3, upper = 15)
+)
+
+#Create train and test tasks to fit and evaluate model
+traintask_ct <- makeRegrTask(data = df_train, target = "quality")
+testtask_ct <- makeRegrTask(data = df_test, target = "quality")
+
+set.seed(42)
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = detectCores())
+
+tune_ct <- tuneParams(learner = ct_learn, 
+                       task = traintask_ct,
+                       resampling = set_cv,
+                       measures = mae,
+                       par.set = ct_par,
+                       control = rancontrol)
+
+final_ct <- setHyperPars(learner = ct_learn, par.vals = tune_ct$x)
+to.ct <- train(final_ct, traintask_ct)
+
+#Calculate MAE of predictions
+ctpred <- predict(to.ct,testtask_ct)
+
+#Mean absolute error
+performance(ctpred, measures = mae)
+```
+
+
+-------------------------------
+##Conditional Inference Forest
+-------------------------------
+
+
+```{r}
+cf_learn <- makeLearner(cl = "regr.cforest", 
+                         predict.type = "response")
+
+rancontrol <- makeTuneControlRandom(maxit = 50L)
+set_cv <- makeResampleDesc("CV", iters = 10L)
+
+#Define grid search parameters
+cf_par <- makeParamSet(
+  makeDiscreteParam("ntree", values = seq(100,500,20)),
+  makeDiscreteParam("mincriterion", values = seq(0.9,0.99,0.01)),
+  makeDiscreteParam("mtry", values = seq(2,10,1))
+)
+
+#Create train and test tasks to fit and evaluate model
+traintask_cf <- makeRegrTask(data = df_train, target = "quality")
+testtask_cf <- makeRegrTask(data = df_test, target = "quality")
+
+set.seed(42)
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = detectCores())
+
+tune_cf <- tuneParams(learner = cf_learn, 
+                       task = traintask_cf,
+                       resampling = set_cv,
+                       measures = mae,
+                       par.set = cf_par,
+                       control = rancontrol)
+
+final_cf <- setHyperPars(learner = cf_learn, par.vals = tune_cf$x)
+to.cf <- train(final_cf, traintask_cf)
+
+#Calculate MAE of predictions
+cfpred <- predict(to.cf,testtask_cf)
+
+#Mean absolute error
+performance(cfpred, measures = mae)
+```
+
+
+-------------------------
+##Gradient boosted model
+-------------------------
+
+```{r}
+gbm_learn <- makeLearner(cl = "regr.gbm", 
+                         predict.type = "response")
+
+rancontrol <- makeTuneControlRandom(maxit = 50L)
+set_cv <- makeResampleDesc("CV", iters = 10L)
+
+#Define grid search parameters
+gbm_par <- makeParamSet(
+  makeDiscreteParam("distribution", values = c("gaussian","optimal")),
+  makeIntegerParam("n.trees", lower = 100, upper = 500), #number of trees
+  makeIntegerParam("interaction.depth", lower = 2, upper = 10), #depth of tree
+  makeIntegerParam("n.minobsinnode", lower = 10, upper = 15),
+  makeNumericParam("shrinkage",lower = 0.01, upper = 1)
+)
+
+#Create train and test tasks to fit and evaluate model
+traintask <- makeRegrTask(data = df_train, target = "quality")
+testtask <- makeRegrTask(data = df_test, target = "quality")
+
+set.seed(42)
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = 3)
+
+tune_gbm <- tuneParams(learner = gbm_learn, 
+                       task = traintask,
+                       resampling = set_cv,
+                       measures = mae,
+                       par.set = gbm_par,
+                       control = rancontrol)
+
+final_gbm <- setHyperPars(learner = gbm_learn, par.vals = tune_gbm$x)
+to.gbm <- train(final_gbm, traintask)
+
+#Calculate MAE of predictions
+gbpred <- predict(to.gbm,testtask)
+gbpred_data <- gbpred$data
+
+#Mean absolute error
+performance(gbpred, measures = mae)
+
+#Distribution of errors
+summary(abs(gbpred_data$truth - gbpred_data$response))
+
+#Plot distrbution of errors
+ggplot() + 
+  geom_density(aes(abs(gbpred_data$truth - gbpred_data$response))) +
+  xlab("Errors")
+```
+
+
+--------------------------------------------------------
+##Extreme Gradient Boosted Models (xGBoost)
+--------------------------------------------------------
+
+
+```{r}
+##Xtreme GB trees using the "mlr" package - allows for grid search in xgb
+
+#Define the learner
+lrn <- makeLearner(cl = "regr.xgboost", predict.type = "response")
+
+#Define grid search parameters
+params <- makeParamSet(
+         makeDiscreteParam("booster",values = c("gbtree","gblinear")),
+         makeIntegerParam("max_depth",lower = 3L,upper = 10L),
+         makeNumericParam("min_child_weight",lower = 1L,upper = 10L),
+         makeNumericParam("subsample",lower = 0.5,upper = 1),
+         makeNumericParam("colsample_bytree",lower = 0.5,upper = 1),
+         makeNumericParam("eta", lower = 0.01, upper = 0.1),
+         makeDiscreteParam("nrounds", values = seq(100L, 1000L, by = 50L))
+)
+```
+
+```{r}
+#Create train and test tasks to fit and evaluate model
+traintask <- makeRegrTask(data = df_train, target = "quality")
+
+testtask <- makeRegrTask(data = df_test,target = "quality")
+
+#Set type of resampling
+rdesc <- makeResampleDesc("CV", iters = 10L)
+ctrl <- makeTuneControlRandom(maxit = 50L)
+
+#Tune the model based on the hyperparameters
+set.seed(42)
+
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = detectCores())
+
+lrn$par.vals <- list(
+               objective= "reg:linear",
+               eval_metric= "mae")
+  
+mytune <- tuneParams(learner = lrn,
+               task = traintask,
+               resampling = rdesc,
+               measures = mae,
+               par.set = params,
+               control = ctrl,
+               show.info = TRUE)
+```
+
+
+```{r}
+#Set parameters as defined by grid search in previous step
+lrn_tune <- setHyperPars(lrn,
+                         par.vals = mytune$x,
+                         print_every_n = 100)
+
+#Fit the X-gradient boosted model
+set.seed(42)
+
+xgmodel <- train(learner = lrn_tune,
+                 task = traintask)
+
+xgpred <- predict(xgmodel,testtask)
+xg_predData <- xgpred$data
+
+#Mean absolute error
+performance(xgpred, measures = mae)
+
+#Distribution of errors
+summary(abs(xg_predData$truth - xg_predData$response))
+
+#Plot distrbution of errors
+ggplot() + 
+  geom_density(aes(abs(xg_predData$truth - xg_predData$response))) +
+  xlab("Errors")
+```
+
