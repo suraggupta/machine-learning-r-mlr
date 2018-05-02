@@ -62,7 +62,7 @@ df_test  <- df[-trainIndex,]
 
 
 --------------------------------------------
-##Linear Regression (lm() using MLR package)
+## Linear Regression (lm() using MLR package)
 --------------------------------------------
 
 ```{r}
@@ -110,7 +110,7 @@ summary(abs(predData_lm$truth - predData_lm$response)) #Distribution of errors
 
 
 -----------
-##KNN
+## KNN
 -----------
 
 ```{r}
@@ -158,7 +158,7 @@ performance(knnpred, measures = mae)
 
 
 -----------------
-##Neural networks
+## Neural networks
 -----------------
 
 ```{r}
@@ -207,7 +207,7 @@ performance(nnetpred, measures = mae)
 
 
 -------------------------
-##H2O - Deep Learning
+## H2O - Deep Learning
 -------------------------
 
 ```{r}
@@ -276,7 +276,7 @@ ggplot() +
 
 
 -------------------------
-##Regression Trees
+## Regression Trees
 -------------------------
 
 
@@ -323,7 +323,7 @@ performance(rtpred, measures = mae)
 
 
 -------------------------
-##Random Forest
+## Random Forest
 -------------------------
 
 
@@ -368,7 +368,7 @@ performance(rfpred, measures = mae)
 
 
 -----------------------------
-##Conditional Inference Tree
+## Conditional Inference Tree
 -----------------------------
 
 
@@ -415,7 +415,7 @@ performance(ctpred, measures = mae)
 
 
 -------------------------------
-##Conditional Inference Forest
+## Conditional Inference Forest
 -------------------------------
 
 
@@ -461,7 +461,7 @@ performance(cfpred, measures = mae)
 
 
 -------------------------
-##Gradient boosted model
+## Gradient boosted model
 -------------------------
 
 ```{r}
@@ -517,7 +517,7 @@ ggplot() +
 
 
 --------------------------------------------------------
-##Extreme Gradient Boosted Models (xGBoost)
+## Extreme Gradient Boosted Models (xGBoost)
 --------------------------------------------------------
 
 
